@@ -794,11 +794,11 @@
                         <div class="chart-legend">
                             <div class="legend-item">
                                 <div class="legend-color" style="background: #4fc3f7"></div>
-                                <span>Давление (×10 МПа)</span>
+                                <span>Давление, МПа (→)</span>
                             </div>
                             <div class="legend-item">
                                 <div class="legend-color" style="background: #ff9800"></div>
-                                <span>Мощность основного</span>
+                                <span>Мощн. основного</span>
                             </div>
                             <div class="legend-item">
                                 <div class="legend-color" style="background: #f44336"></div>
@@ -806,7 +806,7 @@
                             </div>
                             <div class="legend-item">
                                 <div class="legend-color" style="background: #4caf50"></div>
-                                <span>Суммарная мощность</span>
+                                <span>Сумм. мощность</span>
                             </div>
                         </div>
                     </div>
@@ -994,7 +994,9 @@
                 totalPower: [],
                 demand: []
             },
-            chartMaxPoints: 200
+            chartMaxPoints: 600,  // 60 сек при 10 точек/сек
+            chartSampleInterval: 100,  // мс между точками
+            lastChartUpdate: 0
         };
 
         // ===== ВСПЛЫВАЮЩИЕ УВЕДОМЛЕНИЯ =====
@@ -1286,6 +1288,7 @@
         function updateChart() {
             const canvas = document.getElementById('chart');
             const ctx = canvas.getContext('2d');
+            const now = Date.now();
 
             // Размеры
             canvas.width = canvas.offsetWidth * 2;
@@ -1294,7 +1297,7 @@
 
             const w = canvas.offsetWidth;
             const h = canvas.offsetHeight;
-            const padding = { left: 40, right: 10, top: 10, bottom: 20 };
+            const padding = { left: 45, right: 50, top: 10, bottom: 20 };
             const chartW = w - padding.left - padding.right;
             const chartH = h - padding.top - padding.bottom;
 
@@ -1302,22 +1305,26 @@
             ctx.fillStyle = '#000';
             ctx.fillRect(0, 0, w, h);
 
-            // Добавить точки в историю
-            const masterIdx = getMasterBoiler();
-            const masterPower = masterIdx >= 0 ? state.boilers[masterIdx].power : 0;
-            const totalPower = state.boilers.reduce((sum, b) => sum + (b.running ? b.power : 0), 0);
+            // Добавить точки в историю (каждые 100мс)
+            if (now - state.lastChartUpdate >= state.chartSampleInterval) {
+                state.lastChartUpdate = now;
 
-            state.chartHistory.pressure.push(state.pressure * 10);
-            state.chartHistory.masterPower.push(masterPower);
-            state.chartHistory.totalPower.push(totalPower);
-            state.chartHistory.demand.push(state.steamDemand);
+                const masterIdx = getMasterBoiler();
+                const masterPower = masterIdx >= 0 ? state.boilers[masterIdx].power : 0;
+                const totalPower = state.boilers.reduce((sum, b) => sum + (b.running ? b.power : 0), 0);
 
-            // Ограничить историю
-            Object.keys(state.chartHistory).forEach(key => {
-                while (state.chartHistory[key].length > state.chartMaxPoints) {
-                    state.chartHistory[key].shift();
-                }
-            });
+                state.chartHistory.pressure.push(state.pressure);
+                state.chartHistory.masterPower.push(masterPower);
+                state.chartHistory.totalPower.push(totalPower);
+                state.chartHistory.demand.push(state.steamDemand);
+
+                // Ограничить историю
+                Object.keys(state.chartHistory).forEach(key => {
+                    while (state.chartHistory[key].length > state.chartMaxPoints) {
+                        state.chartHistory[key].shift();
+                    }
+                });
+            }
 
             // Сетка
             ctx.strokeStyle = 'rgba(255,255,255,0.1)';
@@ -1330,8 +1337,8 @@
                 ctx.stroke();
             }
 
-            // Подписи оси Y
-            ctx.fillStyle = '#666';
+            // Подписи левой оси Y (Мощность, МВт)
+            ctx.fillStyle = '#ff9800';
             ctx.font = '10px sans-serif';
             ctx.textAlign = 'right';
             for (let i = 0; i <= 4; i++) {
@@ -1340,8 +1347,17 @@
                 ctx.fillText(val.toString(), padding.left - 5, y + 3);
             }
 
-            // Линии графика
-            function drawLine(data, color) {
+            // Подписи правой оси Y (Давление, МПа)
+            ctx.fillStyle = '#4fc3f7';
+            ctx.textAlign = 'left';
+            for (let i = 0; i <= 4; i++) {
+                const val = (1.0 - i * 0.25).toFixed(2);
+                const y = padding.top + (chartH / 4) * i;
+                ctx.fillText(val, w - padding.right + 5, y + 3);
+            }
+
+            // Линии графика для мощности (шкала 0-16)
+            function drawLinePower(data, color) {
                 if (data.length < 2) return;
                 ctx.strokeStyle = color;
                 ctx.lineWidth = 2;
@@ -1355,12 +1371,27 @@
                 ctx.stroke();
             }
 
-            drawLine(state.chartHistory.demand, '#f44336');
-            drawLine(state.chartHistory.totalPower, '#4caf50');
-            drawLine(state.chartHistory.masterPower, '#ff9800');
-            drawLine(state.chartHistory.pressure, '#4fc3f7');
+            // Линия графика для давления (шкала 0-1.0 МПа)
+            function drawLinePressure(data, color) {
+                if (data.length < 2) return;
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                data.forEach((val, i) => {
+                    const x = padding.left + (i / (state.chartMaxPoints - 1)) * chartW;
+                    const y = padding.top + chartH - (val / 1.0) * chartH;
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                });
+                ctx.stroke();
+            }
 
-            // Горизонтальные линии порогов
+            drawLinePower(state.chartHistory.demand, '#f44336');
+            drawLinePower(state.chartHistory.totalPower, '#4caf50');
+            drawLinePower(state.chartHistory.masterPower, '#ff9800');
+            drawLinePressure(state.chartHistory.pressure, '#4fc3f7');
+
+            // Горизонтальные линии порогов мощности
             ctx.setLineDash([5, 5]);
             ctx.strokeStyle = 'rgba(76, 175, 80, 0.5)';
             ctx.lineWidth = 1;
@@ -1372,6 +1403,14 @@
 
             ctx.strokeStyle = 'rgba(255, 152, 0, 0.5)';
             thresholdY = padding.top + chartH - (state.params.powerDisconnectThreshold / 16) * chartH;
+            ctx.beginPath();
+            ctx.moveTo(padding.left, thresholdY);
+            ctx.lineTo(w - padding.right, thresholdY);
+            ctx.stroke();
+
+            // Горизонтальная линия уставки давления
+            ctx.strokeStyle = 'rgba(79, 195, 247, 0.5)';
+            thresholdY = padding.top + chartH - (state.params.pressureSetpoint / 1.0) * chartH;
             ctx.beginPath();
             ctx.moveTo(padding.left, thresholdY);
             ctx.lineTo(w - padding.right, thresholdY);
